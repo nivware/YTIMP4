@@ -9,7 +9,7 @@ function Show-Menu {
     Write-Host "  ██   ██ ██      ██  ██  ██ ██    ██  " -ForegroundColor White
     Write-Host "  ██   ██ ███████ ██      ██  ██████   " -ForegroundColor Red
     Write-Host ""
-    Write-Host "  YTIMP4 - TOOLBOX (REMO)" -ForegroundColor Red
+    Write-Host "  YTIMP4 - TOOLBOX" -ForegroundColor Red
     Write-Host "  YouTube Downloader & Manager" -ForegroundColor White
     Write-Host "  Developer: Livia" -ForegroundColor Gray
     Write-Host "  Contributors: FILipKOS, Lexxenaii" -ForegroundColor Gray
@@ -84,12 +84,7 @@ function Install-Dependencies {
         "flask",
         "yt-dlp",
         "requests",
-        "beautifulsoup4",
-        "aiohttp",
-        "colorama",
-        "google-api-python-client",
-        "psutil",
-        "cryptography"
+        "aiohttp"
     )
     
     foreach ($pkg in $requirements) {
@@ -205,12 +200,7 @@ function Repair-CommonIssues {
 flask>=2.0.0
 yt-dlp>=2023.0.0
 requests>=2.25.0
-beautifulsoup4>=4.9.0
 aiohttp>=3.8.0
-colorama>=0.4.4
-google-api-python-client>=2.0.0
-psutil>=5.8.0
-cryptography>=3.4.0
 "@ | Out-File -FilePath "requirements.txt" -Encoding UTF8
         Write-Host "        requirements.txt [CREATED]" -ForegroundColor Green
     } else {
@@ -219,7 +209,7 @@ cryptography>=3.4.0
     
     Write-Host ""
     Write-Host "      Running pip install..." -ForegroundColor Gray
-    pip install flask yt-dlp requests beautifulsoup4 aiohttp colorama google-api-python-client psutil cryptography -q
+    pip install flask yt-dlp requests aiohttp -q
     
     Write-Host ""
     Write-Host "      Fixing git line endings..." -ForegroundColor Gray

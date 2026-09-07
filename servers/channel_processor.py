@@ -1,133 +1,145 @@
-# cython: language_level=3
-# distutils: language=c++
-
 import concurrent.futures
-import requests
+import csv
 import json
 import os
-import time
-import csv
+import re
 import subprocess
 import sys
-import re
+import time
+import requests
 
-class ConcurrentChannelProcessor:
+
+class ChannelProcessor:
+    
     def __init__(self, max_workers=10):
         self.max_workers = max_workers
         self.results = []
-        self.api_key = self._get_api_key()
+        self.api_key = self._load_api_key()
     
-    def _get_api_key(self):
+    def _load_api_key(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.join(script_dir, 'config.json')
+        config_paths = [
+            os.path.join(script_dir, 'config.json'),
+            os.path.join(script_dir, '..', 'config.json'),
+        ]
         
-        if not os.path.exists(config_path):
-            config_path = os.path.join(script_dir, '..', 'config.json')
-        
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                    return config.get('youtube_api_key', '')
-            except Exception:
-                return ""
+        for path in config_paths:
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                        return config.get('youtube_api_key', '')
+                except (json.JSONDecodeError, OSError):
+                    continue
         return ""
     
-    def fetch_with_ytdlp(self, channel_id):
-        try:
-            cmd = [sys.executable, "-m", "yt_dlp", "--skip-download", "--dump-json", f"https://www.youtube.com/channel/{channel_id}"]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            
-            if result.returncode == 0:
-                data = json.loads(result.stdout)
-                
-                channel_url = data.get('channel_url', '')
-                channel_id_match = re.search(r'channel/([^/]+)', channel_url)
-                actual_channel_id = channel_id_match.group(1) if channel_id_match else channel_id
-                
-                uploader = data.get('uploader', 'Unknown')
-                channel_handle = data.get('channel', '')
-                
-                return {
-                    'channel_id': actual_channel_id,
-                    'name': uploader,
-                    'handle': f"@{channel_handle}" if channel_handle else '',
-                    'avatar_url': data.get('thumbnails', [{}])[-1].get('url', '') if data.get('thumbnails') else '',
-                    'subscribers': data.get('channel_follower_count', 'N/A'),
-                    'videos': data.get('channel_video_count', 'N/A'),
-                    'views': 'N/A',
-                    'country': 'N/A',
-                    'custom_url': '',
-                    'description': data.get('description', '')[:200]
-                }
-            return None
-        except Exception as e:
-            return None
-    
-    def fetch_with_api(self, channel_ids):
-        results = []
-        
+    def _fetch_via_api(self, channel_ids):
         if not channel_ids or not self.api_key:
-            return results
+            return []
         
-        ids = ','.join(channel_ids[:50])
-        url = f"https://www.googleapis.com/youtube/v3/channels?id={ids}&part=statistics,snippet&key={self.api_key}"
+        url = (
+            f"https://www.googleapis.com/youtube/v3/channels"
+            f"?id={','.join(channel_ids[:50])}"
+            f"&part=statistics,snippet"
+            f"&key={self.api_key}"
+        )
         
         try:
             response = requests.get(url, timeout=30)
             if response.status_code != 200:
-                return results
+                return []
             
             data = response.json()
-            
             if 'error' in data:
-                return results
+                return []
             
-            for item in data.get('items', []):
-                stats = item.get('statistics', {})
-                snippet = item.get('snippet', {})
-                thumbnails = snippet.get('thumbnails', {})
-                avatar_url = thumbnails.get('high', {}).get('url', '')
-                if not avatar_url:
-                    avatar_url = thumbnails.get('medium', {}).get('url', '')
-                if not avatar_url:
-                    avatar_url = thumbnails.get('default', {}).get('url', '')
-                
-                results.append({
-                    'channel_id': item.get('id', ''),
-                    'name': snippet.get('title', 'Unknown'),
-                    'handle': f"@{snippet.get('customUrl', '').lower()}" if snippet.get('customUrl') else '',
-                    'avatar_url': avatar_url,
-                    'subscribers': int(stats.get('subscriberCount', 0)),
-                    'videos': int(stats.get('videoCount', 0)),
-                    'views': int(stats.get('viewCount', 0)),
-                    'country': snippet.get('country', 'N/A'),
-                    'custom_url': snippet.get('customUrl', ''),
-                    'description': snippet.get('description', '')[:200]
-                })
-            return results
-        except Exception:
-            return results
+            return [self._parse_api_item(item) for item in data.get('items', [])]
+            
+        except (requests.RequestException, json.JSONDecodeError):
+            return []
+    
+    def _parse_api_item(self, item):
+        stats = item.get('statistics', {})
+        snippet = item.get('snippet', {})
+        thumbs = snippet.get('thumbnails', {})
+        
+        avatar = (
+            thumbs.get('high', {}).get('url') or
+            thumbs.get('medium', {}).get('url') or
+            thumbs.get('default', {}).get('url') or
+            ''
+        )
+        
+        custom_url = snippet.get('customUrl', '')
+        handle = f"@{custom_url.lower()}" if custom_url else ''
+        
+        return {
+            'channel_id': item.get('id', ''),
+            'name': snippet.get('title', 'Unknown'),
+            'handle': handle,
+            'avatar_url': avatar,
+            'subscribers': int(stats.get('subscriberCount', 0)),
+            'videos': int(stats.get('videoCount', 0)),
+            'views': int(stats.get('viewCount', 0)),
+            'country': snippet.get('country', 'N/A'),
+            'custom_url': custom_url,
+            'description': snippet.get('description', '')[:200],
+        }
+    
+    def _fetch_via_ytdlp(self, channel_id):
+        try:
+            cmd = [
+                sys.executable, "-m", "yt_dlp",
+                "--skip-download", "--dump-json",
+                f"https://www.youtube.com/channel/{channel_id}"
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            
+            if result.returncode != 0:
+                return None
+            
+            data = json.loads(result.stdout)
+            
+            channel_url = data.get('channel_url', '')
+            channel_id_match = re.search(r'channel/([^/]+)', channel_url)
+            actual_channel_id = channel_id_match.group(1) if channel_id_match else channel_id
+            
+            uploader = data.get('uploader', 'Unknown')
+            channel_handle = data.get('channel', '')
+            thumbnails = data.get('thumbnails', [{}])
+            
+            return {
+                'channel_id': actual_channel_id,
+                'name': uploader,
+                'handle': f"@{channel_handle}" if channel_handle else '',
+                'avatar_url': thumbnails[-1].get('url', '') if thumbnails else '',
+                'subscribers': data.get('channel_follower_count', 'N/A'),
+                'videos': data.get('channel_video_count', 'N/A'),
+                'views': 'N/A',
+                'country': 'N/A',
+                'custom_url': '',
+                'description': data.get('description', '')[:200],
+            }
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, ValueError, KeyError):
+            return None
     
     def process_channels(self, channel_ids, max_channels=1000):
-        all_results = []
-        
         if not channel_ids:
-            return all_results
+            return []
         
         if len(channel_ids) > max_channels:
             print(f"Limiting from {len(channel_ids)} to {max_channels} channels")
             channel_ids = channel_ids[:max_channels]
         
+        all_results = []
         use_api = bool(self.api_key)
         
         if use_api:
             print(f"Using YouTube API to process {len(channel_ids)} channels...")
-            
             batches = [channel_ids[i:i+50] for i in range(0, len(channel_ids), 50)]
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                futures = [executor.submit(self.fetch_with_api, batch) for batch in batches]
+                futures = [executor.submit(self._fetch_via_api, batch) for batch in batches]
                 
                 for future in concurrent.futures.as_completed(futures):
                     try:
@@ -139,11 +151,12 @@ class ConcurrentChannelProcessor:
             
             if len(all_results) < len(channel_ids):
                 print(f"API only returned {len(all_results)}/{len(channel_ids)} channels, falling back to yt-dlp...")
-                failed_ids = [cid for cid in channel_ids if not any(r['channel_id'] == cid for r in all_results)]
+                fetched_ids = {r['channel_id'] for r in all_results}
+                failed_ids = [cid for cid in channel_ids if cid not in fetched_ids]
                 
                 for channel_id in failed_ids:
                     print(f"Fetching {channel_id} with yt-dlp...")
-                    result = self.fetch_with_ytdlp(channel_id)
+                    result = self._fetch_via_ytdlp(channel_id)
                     if result:
                         all_results.append(result)
                     time.sleep(1)
@@ -151,7 +164,7 @@ class ConcurrentChannelProcessor:
             print(f"No API key found, using yt-dlp for {len(channel_ids)} channels...")
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                futures = {executor.submit(self.fetch_with_ytdlp, channel_id): channel_id for channel_id in channel_ids}
+                futures = {executor.submit(self._fetch_via_ytdlp, cid): cid for cid in channel_ids}
                 
                 for future in concurrent.futures.as_completed(futures):
                     channel_id = futures[future]
@@ -171,24 +184,20 @@ class ConcurrentChannelProcessor:
         return self.results
     
     def process_single_channel(self, channel_id):
-        result = None
-        
         if self.api_key:
-            api_result = self.fetch_with_api([channel_id])
+            api_result = self._fetch_via_api([channel_id])
             if api_result:
-                result = api_result[0]
+                return api_result[0]
         
-        if not result:
-            result = self.fetch_with_ytdlp(channel_id)
-        
-        return result if result else None
+        return self._fetch_via_ytdlp(channel_id)
     
     def save_to_csv(self, filename):
         if not self.results:
             return
         
+        fieldnames = ['channel_id', 'name', 'handle', 'subscribers', 'videos', 'views', 'country', 'avatar_url', 'description']
         with open(filename, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=['channel_id', 'name', 'handle', 'subscribers', 'videos', 'views', 'country', 'avatar_url', 'description'])
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(self.results)
         print(f"Saved {len(self.results)} channels to {filename}")
@@ -204,17 +213,16 @@ class ConcurrentChannelProcessor:
     def get_results(self):
         return self.results
 
+
 def main():
-    import sys
-    
     if len(sys.argv) < 2:
-        print("Usage: python channel_processor.py <channel_ids_file>")
-        print("Or: python channel_processor.py --single <channel_id>")
-        print("Or: python channel_processor.py --url <channel_url>")
+        print("Usage: python downloads.py <channel_ids_file>")
+        print("Or: python downloads.py --single <channel_id>")
+        print("Or: python downloads.py --url <channel_url>")
         sys.exit(1)
     
     if sys.argv[1] == '--single' and len(sys.argv) >= 3:
-        processor = ConcurrentChannelProcessor(max_workers=1)
+        processor = ChannelProcessor(max_workers=1)
         result = processor.process_single_channel(sys.argv[2])
         if result:
             print(json.dumps(result, indent=2))
@@ -223,7 +231,7 @@ def main():
         sys.exit(0)
     
     if sys.argv[1] == '--url' and len(sys.argv) >= 3:
-        processor = ConcurrentChannelProcessor(max_workers=1)
+        processor = ChannelProcessor(max_workers=1)
         channel_url = sys.argv[2]
         channel_id_match = re.search(r'channel/([^/]+)', channel_url)
         if channel_id_match:
@@ -258,21 +266,22 @@ def main():
     if len(sys.argv) >= 3 and sys.argv[2].isdigit():
         max_channels = int(sys.argv[2])
     
-    processor = ConcurrentChannelProcessor(max_workers=10)
+    processor = ChannelProcessor(max_workers=10)
     results = processor.process_channels(channel_ids, max_channels)
     
     if results:
         output_dir = os.path.dirname(sys.argv[1]) or '.'
-        output_file = os.path.join(output_dir, 'channels_output.csv')
-        processor.save_to_csv(output_file)
-        
+        csv_file = os.path.join(output_dir, 'channels_output.csv')
         json_file = os.path.join(output_dir, 'channels_output.json')
+        
+        processor.save_to_csv(csv_file)
         processor.save_to_json(json_file)
         
-        print(json.dumps({'total': len(results), 'csv_file': output_file, 'json_file': json_file}))
+        print(json.dumps({'total': len(results), 'csv_file': csv_file, 'json_file': json_file}))
     else:
         print(json.dumps({'error': 'No results returned', 'total': 0}))
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
