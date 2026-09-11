@@ -44,20 +44,25 @@ def check_deno():
     except:
         return False
 
+# fkos: download.py has a fixed downloading for ffmpeg, although ytimp4.py never had it,
+# causing issues on Linux or Mac OS, i hope this fix will work otherwise i will cry into my pillow
 def check_ffmpeg():
-    ffmpeg_paths = ["ffmpeg.exe", os.path.join(os.path.dirname(__file__), "ffmpeg.exe")]
-    for p in ffmpeg_paths:
-        if os.path.exists(p):
+    binary_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+    ffmpeg_paths = [
+        binary_name,
+        os.path.join(os.path.dirname(__file__), binary_name),
+        shutil.which("ffmpeg"),
+    ]
+    for p in ffmpeg_paths: 
+        if p and os.path.exists(p):
             return True
     return False
 
+# fkos: Experimental cross-platform for get_browser_cookies()
 def get_browser_cookies():
     cookies_found = []
-    local_app_data = Path(os.environ.get('LOCALAPPDATA', ''))
-    roaming_app_data = Path(os.environ.get('APPDATA', ''))
-
-    if local_app_data:
-        chrome_path = local_app_data / 'Google' / 'Chrome' / 'User Data' / 'Default' / 'Cookies'
+ 
+    for browser_name, chrome_path in get_chromium_cookie_paths():
         if chrome_path.exists():
             try:
                 temp_db = os.path.join(os.path.dirname(__file__), 'temp_cookies.db')
@@ -69,31 +74,30 @@ def get_browser_cookies():
                 conn.close()
                 os.remove(temp_db)
                 if cookies:
-                    cookies_found.append(('Chrome', [(c[0], c[1], c[2], c[3], c[4], c[5]) for c in cookies]))
+                    cookies_found.append((browser_name, [(c[0], c[1], c[2], c[3], c[4], c[5]) for c in cookies]))
             except:
                 pass
-
-    if roaming_app_data:
-        firefox_path = roaming_app_data / 'Mozilla' / 'Firefox' / 'Profiles'
-        if firefox_path.exists():
-            for profile in firefox_path.iterdir():
-                if profile.is_dir():
-                    cookie_db = profile / 'cookies.sqlite'
-                    if cookie_db.exists():
-                        try:
-                            temp_db = os.path.join(os.path.dirname(__file__), 'temp_cookies.db')
-                            shutil.copy2(cookie_db, temp_db)
-                            conn = sqlite3.connect(temp_db)
-                            c = conn.cursor()
-                            c.execute("SELECT name, value, host, path, isSecure, expiry FROM moz_cookies WHERE host LIKE '%youtube.com%' OR host LIKE '%google.com%'")
-                            cookies = c.fetchall()
-                            conn.close()
-                            os.remove(temp_db)
-                            if cookies:
-                                cookies_found.append(('Firefox', [(c[0], c[1], c[2], c[3], c[4], c[5]) for c in cookies]))
-                                break
-                        except:
-                            continue
+ 
+    firefox_path = get_firefox_profiles_path()
+    if firefox_path and firefox_path.exists():
+        for profile in firefox_path.iterdir():
+            if profile.is_dir():
+                cookie_db = profile / 'cookies.sqlite'
+                if cookie_db.exists():
+                    try:
+                        temp_db = os.path.join(os.path.dirname(__file__), 'temp_cookies.db')
+                        shutil.copy2(cookie_db, temp_db)
+                        conn = sqlite3.connect(temp_db)
+                        c = conn.cursor()
+                        c.execute("SELECT name, value, host, path, isSecure, expiry FROM moz_cookies WHERE host LIKE '%youtube.com%' OR host LIKE '%google.com%'")
+                        cookies = c.fetchall()
+                        conn.close()
+                        os.remove(temp_db)
+                        if cookies:
+                            cookies_found.append(('Firefox', [(c[0], c[1], c[2], c[3], c[4], c[5]) for c in cookies]))
+                            break
+                    except:
+                        continue
     return cookies_found
 
 def save_cookies(cookies):
